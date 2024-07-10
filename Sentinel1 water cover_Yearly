@@ -1,0 +1,88 @@
+// 利用VV VH 推估出水體 正確性需要再研究
+// Define ROI for wetland
+var coords = [
+  [[121.417681921666, 25.1679985333518], [121.42212264459, 25.1638653264896], 
+   [121.422161548077, 25.1637361229219], [121.421669436939, 25.163630163993], 
+   [121.421440399281, 25.1636005794512], [121.421096642751, 25.1636413205843], 
+   [121.420683026734, 25.1637114307947], [121.419374133901, 25.1640261198785], 
+   [121.418360829856, 25.1640829598024], [121.417607211616, 25.1639807594822], 
+   [121.417466724646, 25.163782852302], [121.417270606106, 25.1635927169186], 
+   [121.417148764897, 25.1631368332639], [121.41714080673, 25.1629704654714], 
+   [121.417085425471, 25.1629413481011], [121.416902640288, 25.1630097979222], 
+   [121.416253909006, 25.1634634219578], [121.41595283846, 25.1643084945578], 
+   [121.416177946648, 25.1649199451916], [121.416235434296, 25.165157048303], 
+   [121.416238515845, 25.1660648530044], [121.416476181469, 25.1673870830101], 
+   [121.417681921666, 25.1679985333518]]
+];
+
+var roi = ee.Geometry.MultiPolygon(coords);
+Map.addLayer(roi, {color: 'red'}, 'ROI');
+
+// Define the time range
+var startDate = '2015-01-01';
+var endDate = '2023-12-31';
+
+// Load Sentinel-1 GRD data
+var sentinel1 = ee.ImageCollection('COPERNICUS/S1_GRD')
+  .filterBounds(roi)
+  .filterDate(startDate, endDate)
+  .filter(ee.Filter.eq('instrumentMode', 'IW'))
+  .filter(ee.Filter.listContains('transmitterReceiverPolarisation', 'VV'))
+  .filter(ee.Filter.listContains('transmitterReceiverPolarisation', 'VH'))
+  .select(['VV', 'VH']);
+
+// Function to calculate NDWI
+var calculateNDWI = function(image) {
+  var vv = image.select('VV');
+  var vh = image.select('VH');
+  var ndwi = vv.subtract(vh).divide(vv.add(vh)).rename('NDWI');
+  return image.addBands(ndwi);
+};
+
+// Apply the NDWI calculation function to the collection
+var ndwiCollection = sentinel1.map(calculateNDWI);
+
+// Calculate yearly mean NDWI
+var years = ee.List.sequence(2015, 2023);
+var yearlyNDWI = ee.ImageCollection.fromImages(
+  years.map(function(year) {
+    var start = ee.Date.fromYMD(year, 1, 1);
+    var end = start.advance(1, 'year');
+    var annualNDWI = ndwiCollection
+      .filterDate(start, end)
+      .mean()
+      .set('year', year);
+    return annualNDWI;
+  })
+);
+
+// Extract NDWI values for charting
+var chartData = yearlyNDWI.toList(yearlyNDWI.size()).map(function(image) {
+  var ndwiValue = ee.Image(image).reduceRegion({
+    reducer: ee.Reducer.mean(),
+    geometry: roi,
+    scale: 10,
+    maxPixels: 1e9
+  }).get('NDWI');
+  return ee.Feature(null, {
+    'year': ee.Image(image).get('year'),
+    'NDWI': ndwiValue
+  });
+});
+
+// Create a chart to display NDWI over time
+var chart = ui.Chart.feature.byFeature(chartData, 'year', 'NDWI')
+  .setChartType('LineChart')
+  .setOptions({
+    title: 'NDWI Variation from 2015 to 2023',
+    vAxis: {title: 'NDWI', minValue: -0.3, maxValue: -0.15}, // Adjust Y axis scale here
+    hAxis: {title: 'Year'},
+    lineWidth: 2,
+    pointSize: 5,
+    series: {
+      0: {color: 'blue'}
+    }
+  });
+
+// Display the chart
+print(chart);
